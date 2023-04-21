@@ -20,6 +20,8 @@ import org.apache.jmeter.timers.Timer;
 import org.apache.jmeter.util.JMeterUtils;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 public class VariableThroughputTimer
@@ -62,6 +64,7 @@ public class VariableThroughputTimer
     private double rps;
     private double startSec = 0;
     private CollectionProperty overrideProp;
+    private ArrayList<LoadProfileRow> loadProfile;
     private int stopTries;
     private double lastStopTry;
     private boolean stopping;
@@ -78,12 +81,38 @@ public class VariableThroughputTimer
         setDataProperty();
     }
 
+    private class LoadProfileRow {
+        double fromRps, toRps;
+        int duration;
+
+        LoadProfileRow(double fromRps, double toRps, int duration) {
+            this.fromRps = fromRps;
+            this.toRps = toRps;
+            this.duration = duration;
+        }
+        double getFromRps() {
+            return this.fromRps;
+        }
+        double getToRps() {
+            return this.toRps;
+        }
+        int getDuration() {
+            return this.duration;
+        }
+    }
+
     /**
      * Internally handles that delay for caller thread
      *
      * @return 0
      */
     public synchronized long delay() {
+        if (loadProfile == null) {
+            JMeterProperty data = getData();
+            if (data != null && ! (data instanceof NullProperty)) {
+                setLoadProfile((CollectionProperty) data);
+            }
+        }
         while (true) {
             long curTimeMs = System.currentTimeMillis();
             long millisSinceLastSecond = curTimeMs % 1000;
@@ -194,8 +223,22 @@ public class VariableThroughputTimer
         log.debug("Load property set to {}", dataProperty);
     }
 
+    private void setLoadProfile(CollectionProperty rows) {
+        loadProfile = new ArrayList<>();
+        PropertyIterator iterator = rows.iterator();
+        while (iterator.hasNext()) {
+            @SuppressWarnings("unchecked")
+            List<Object> curProp = (List<Object>) iterator.next().getObjectValue();
+            int duration = getIntValue(curProp, DURATION_FIELD_NO);
+            double fromRps = getDoubleValue(curProp, FROM_FIELD_NO);
+            double toRps = getDoubleValue(curProp, TO_FIELD_NO);
+            loadProfile.add(new LoadProfileRow(fromRps, toRps, duration));
+        }
+    }
+
     public void setData(CollectionProperty rows) {
         setProperty(rows);
+        setLoadProfile(rows);
     }
 
     public JMeterProperty getData() {
@@ -216,20 +259,18 @@ public class VariableThroughputTimer
         if (data instanceof NullProperty) {
             return Pair.of(-1.0, 0L);
         }
-        CollectionProperty rows = (CollectionProperty) data;
-        PropertyIterator scheduleIT = rows.iterator();
+        Iterator<LoadProfileRow> scheduleIT = loadProfile.iterator();
         double newSec = elapsedSinceStartOfTestSec;
         double result = -1;
         boolean resultComputed = false;
         long totalDuration = 0;
         while (scheduleIT.hasNext()) {
-            @SuppressWarnings("unchecked")
-            List<Object> curProp = (List<Object>) scheduleIT.next().getObjectValue();
-            int duration = getIntValue(curProp, DURATION_FIELD_NO);
+            LoadProfileRow row = scheduleIT.next();
+            int duration = row.getDuration();
             totalDuration += duration;
             if (!resultComputed) {
-                double fromRps = getDoubleValue(curProp, FROM_FIELD_NO);
-                double toRps = getDoubleValue(curProp, TO_FIELD_NO);
+                double fromRps = row.getFromRps();
+                double toRps = row.getToRps();
                 if (newSec - duration <= 0) {
                     result = fromRps + newSec * (toRps - fromRps) / (double) duration;
                     resultComputed = true;
@@ -272,6 +313,7 @@ public class VariableThroughputTimer
             log.debug("Setting load profile from property {}: {}", dataProperty, loadProp);
             log.debug("load profile resolved to", dataModel);
             overrideProp = JMeterPluginsUtils.tableModelRowsToCollectionProperty(dataModel, dataProperty);
+            setLoadProfile(overrideProp);
         }
     }
 
